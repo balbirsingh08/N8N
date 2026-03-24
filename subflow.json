@@ -1,0 +1,308 @@
+{
+  "nodes": [
+    {
+      "parameters": {
+        "inputSource": "passthrough"
+      },
+      "id": "9863ccf2-3681-47d1-8b9b-8db27039f0aa",
+      "typeVersion": 1.1,
+      "name": "When Executed by Another Workflow",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "position": [
+        -368,
+        1552
+      ]
+    },
+    {
+      "parameters": {
+        "functionCode": "let rawData = $input.item.json;\n\n// If rawData.query is a JSON string, parse it\nif (typeof rawData?.query === \"string\") {\n  const s = rawData.query.trim();\n  if (s.startsWith(\"{\") && s.endsWith(\"}\")) {\n    try {\n      rawData = JSON.parse(s);\n    } catch (e) {\n      return [{\n        json: {\n          _validation_error: true,\n          email: \"\",\n          chatId: null,\n          error_message: \"Invalid JSON in query field\",\n          parse_error: e.message,\n        }\n      }];\n    }\n  }\n}\n\n// Handle nested 'base' object or flat structure\nconst data = rawData.base || rawData;\n\n// Validate required fields\nif (!data.email || !data.userQuery) {\n  return [{\n    json: {\n      _validation_error: true,\n      email: data.email || '',\n      chatId: data.chatId || null,\n      error_message: 'Missing required fields: email or userQuery',\n      _debug: { keys: Object.keys(rawData) }\n    }\n  }];\n}\n\n// Normalize with fallbacks\nreturn [{\n  json: {\n    email: data.email,\n    chatId: data.chatId || null,\n    userQuery: data.userQuery,\n    intent: String(data.intent || 'unknown').toLowerCase(),\n    confidence: Number(data.confidence ?? 0.8),\n    userLanguage: data.userLanguage || \"Unknown\",\n    timestamp: data.timestamp || new Date().toISOString(),\n    _original: {\n      had_base: !!rawData.base,\n      top_level_keys: Object.keys(rawData)\n    }\n  }\n}];"
+      },
+      "name": "Validate Input",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [
+        -144,
+        1552
+      ],
+      "id": "239b9fd8-545e-4b7a-915d-1c7cc54b1057"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json._validation_error }}",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "name": "Check Validation",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        80,
+        1552
+      ],
+      "id": "c86d2a28-de23-4cd9-a00f-6f6f6a3ee742"
+    },
+    {
+      "parameters": {
+        "functionCode": "const input = $input.item.json;\n\nreturn [{\n  json: {\n    email: input.email,\n    chatId: input.chatId,\n    answerText: \"Missing required information. Please provide email and userQuery.\",\n    confidenceScore: 0.0,\n    responseTimestamp: new Date().toISOString(),\n    suggestedQueries: []\n  }\n}];"
+      },
+      "name": "Return Error",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [
+        1200,
+        1456
+      ],
+      "id": "03d30583-61fe-4a16-8cbb-11681c6926d8"
+    },
+    {
+      "parameters": {
+        "functionCode": "const input = $input.item.json;\nconst intent = input.intent;\nconst email = input.email;\n\nlet query = '';\n\nswitch(intent) {\n  case 'check_balance':\n    query = `\n      SELECT \n        r.first_name,\n        r.currency,\n        COUNT(p.property_id) as properties_count,\n        SUM(p.current_balance) as total_balance,\n        MIN(p.next_due_date) as next_due_date\n      FROM ratepayers r\n      LEFT JOIN properties p ON r.ratepayer_id = p.ratepayer_id\n      WHERE r.email = '${email}'\n      GROUP BY r.first_name, r.currency\n    `;\n    break;\n\n  case 'due_date':\n    query = `\n      SELECT \n        r.first_name,\n        r.currency,\n        MIN(p.next_due_date) as next_due_date,\n        SUM(p.current_balance) as amount_due\n      FROM ratepayers r\n      LEFT JOIN properties p ON r.ratepayer_id = p.ratepayer_id\n      WHERE r.email = '${email}'\n      GROUP BY r.first_name, r.currency\n    `;\n    break;\n\n  case 'payment_history':\n    query = `\n      SELECT \n        r.first_name,\n        r.currency,\n        ph.payment_date,\n        ph.payment_amount,\n        ph.payment_mode,\n        ph.receipt_number\n      FROM payment_history ph\n      JOIN ratepayers r ON ph.ratepayer_id = r.ratepayer_id\n      WHERE r.email = '${email}'\n      ORDER BY ph.payment_date DESC\n      LIMIT 6\n    `;\n    break;\n\n  case 'total_owed':\n    query = `\n      SELECT \n        r.first_name,\n        r.currency,\n        SUM(p.current_balance) as total_owed,\n        COUNT(p.property_id) as properties_count\n      FROM ratepayers r\n      LEFT JOIN properties p ON r.ratepayer_id = p.ratepayer_id\n      WHERE r.email = '${email}'\n      GROUP BY r.first_name, r.currency\n    `;\n    break;\n\n  default:\n    query = `\n      SELECT \n       *\n      FROM ratepayers r\n      WHERE r.email = '${email}'\n    `;\n}\n\nreturn [{\n  json: {\n    ...input,\n    sqlQuery: query\n  }\n}];"
+      },
+      "name": "Build Query by Intent",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [
+        304,
+        1648
+      ],
+      "id": "5af249ca-3e51-4660-9ad6-4704cace5b37"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "{{ $json.sqlQuery }}",
+        "options": {}
+      },
+      "name": "Execute Query",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [
+        528,
+        1648
+      ],
+      "id": "6192cdc7-dc99-458b-b869-5cf33d900f62",
+      "alwaysOutputData": true,
+      "credentials": {
+        "postgres": {
+          "id": "rhekuYTUT7Mdue5B",
+          "name": "Postgres account 2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.groq.com/openai/v1/chat/completions",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ JSON.stringify({\n  model: \"llama-3.3-70b-versatile\",\n  messages: [\n    {\n      role: \"system\",\n      content:\n        \"You are a helpful Australian council rates assistant.\\n\\n\" +\n\n        \"INPUTS:\\n\" +\n        \"- userQuery: original user text\\n\" +\n        \"- translatedQuery: English version of the query\\n\" +\n        \"- userLanguage: may be missing or wrong\\n\" +\n        \"- intent, contextData, firstName\\n\\n\" +\n\n        \"TASKS:\\n\" +\n        \"1) Detect the language of userQuery. Call it detectedLanguage (full English name like English, Hebrew, Tamil).\\n\" +\n        \"2) Write answerText in ENGLISH only.\\n\" +\n        \"3) Translation rules:\\n\" +\n        \"   - If detectedLanguage is English: translated_ratepayer_response MUST be EXACTLY the same as answerText, and native_language_name MUST be \\\"English\\\".\\n\" +\n        \"   - If detectedLanguage is NOT English: translate answerText into that language as translated_ratepayer_response, and native_language_name MUST be the language name written in its native script.\\n\\n\" +\n\n        \"PAYMENT HISTORY RULES (when intent == payment_history):\\n\" +\n        \"- Each payment on a new line\\n\" +\n        \"- Format: YYYY-MM-DD: $Amount via Method\\n\" +\n        \"- Include total at the end\\n\\n\" +\n\n        \"OTHER INTENTS:\\n\" +\n        \"- Under 50 words\\n\" +\n        \"- Address user by first name\\n\\n\" +\n\n        \"OUTPUT RULES:\\n\" +\n        \"- Return ONLY valid JSON. No markdown. No extra text.\\n\" +\n        \"- Never return empty fields.\\n\" +\n        \"- translated_ratepayer_response must follow the English/non-English rule above.\\n\\n\" +\n\n        \"RETURN EXACTLY THIS JSON SHAPE:\\n\" +\n        \"{\\\"answerText\\\":\\\"<english>\\\",\\\"translated_ratepayer_response\\\":\\\"<native or same-as-english>\\\",\\\"native_language_name\\\":\\\"<native script or English>\\\"}\"\n    },\n    {\n      role: \"user\",\n      content:\n        `firstName: ${$json.firstName}\\n` +\n        `userQuery: ${$json.userQuery ?? \"\"}\\n` +\n        `translatedQuery: ${$json.translatedQuery ?? \"\"}\\n` +\n        `intent: ${$json.intent ?? \"\"}\\n` +\n        `contextData: ${$json.contextData ?? $json.context ?? \"\"}`\n    }\n  ],\n  temperature: 0.2,\n  max_tokens: 300\n}) }}\n",
+        "options": {}
+      },
+      "name": "Generate Answer",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        976,
+        1648
+      ],
+      "id": "45a8bf13-39c8-4539-8656-6780b406b5df",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "VdIFUb54GanUMUdd",
+          "name": "Header Auth account"
+        }
+      }
+    },
+    {
+      "parameters": {},
+      "name": "Merge",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 2,
+      "position": [
+        1424,
+        1552
+      ],
+      "id": "a3b87386-c949-4bce-9c83-9f9ca5e5dd99"
+    },
+    {
+      "parameters": {
+        "functionCode": "// Return as array for parent workflow\nconst output = $input.item.json;\n\nreturn [{\n  json: [output]\n}];"
+      },
+      "name": "Return Response",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [
+        1648,
+        1552
+      ],
+      "id": "df535958-b3c2-487b-9a50-297cc6a8d505"
+    },
+    {
+      "parameters": {
+        "jsCode": "const input = $('Build Query by Intent').item.json;\nconst dbResults = $input.all().map(item => item.json);\n\nlet contextData = '';\n\n// Check if any data returned\nif (!dbResults || dbResults.length === 0 || !dbResults[0].first_name) {\n  return [{\n    json: {\n      ...input,\n      contextData: 'No data found',\n      firstName: 'there',\n      hasData: false\n    }\n  }];\n}\n\nconst firstName = dbResults[0].first_name;\nconst currency = dbResults[0].currency;\n\n// Format data based on intent\nswitch(input.intent) {\n  case 'check_balance':\n    const balance = dbResults[0];\n    contextData = `Balance: ${currency} ${parseFloat(balance.total_balance || 0).toFixed(2)}, Properties: ${balance.properties_count}, Next due: ${balance.next_due_date || 'N/A'}`;\n    break;\n    \n  case 'due_date':\n    const dueDate = dbResults[0];\n    contextData = `Next payment due: ${dueDate.next_due_date || 'N/A'}, Amount: ${currency} ${parseFloat(dueDate.amount_due || 0).toFixed(2)}`;\n    break;\n    \n  case 'payment_history':\n    // Aggregate all payment records\n    const totalPaid = dbResults.reduce((sum, p) => sum + parseFloat(p.payment_amount || 0), 0);\n    const paymentList = dbResults.map((p, i) => \n      `${i+1}. ${p.payment_date.split('T')[0]}: ${currency} ${parseFloat(p.payment_amount).toFixed(2)} via ${p.payment_mode} (Receipt: ${p.receipt_number})`\n    ).join(', ');\n    contextData = `Last ${dbResults.length} payments (Total: ${currency} ${totalPaid.toFixed(2)}): ${paymentList}`;\n    break;\n    \n  case 'total_owed':\n    const total = dbResults[0];\n    contextData = `Total owed: ${currency} ${parseFloat(total.total_owed || 0).toFixed(2)} across ${total.properties_count} properties`;\n    break;\n    \n  default:\n    contextData = `DB results for ${firstName}:` + JSON.stringify(dbResults[0]);\n}\n\nreturn [{\n  json: {\n    ...input,\n    contextData: contextData,\n    firstName: firstName,\n    hasData: true\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        752,
+        1648
+      ],
+      "id": "21b3e05f-5cbb-4174-b14e-f0b2f00689f4",
+      "name": "Aggregate Payment Data"
+    },
+    {
+      "parameters": {
+        "functionCode": "const input = $('Aggregate Payment Data').first().json;\nconst groqResponse = $input.first().json;\n\nconst raw = String(groqResponse?.choices?.[0]?.message?.content ?? \"\").trim();\nconst finishReason = groqResponse?.choices?.[0]?.finish_reason;\n\n// Defaults\nlet answerText = \"Request processed.\";\nlet translatedRatepayerResponse = \"Request processed.\";\nlet nativeLanguageName = input.userLanguage || \"Unknown\";\n\n// Try strict JSON parse first\nfunction tryParseJson(text) {\n  const start = text.indexOf(\"{\");\n  const end = text.lastIndexOf(\"}\");\n  if (start === -1 || end === -1 || end <= start) return null;\n  try {\n    return JSON.parse(text.slice(start, end + 1));\n  } catch {\n    return null;\n  }\n}\n\nlet parsed = tryParseJson(raw);\n\nif (parsed && typeof parsed === \"object\") {\n  answerText = String(parsed.answerText ?? answerText).trim() || answerText;\n  translatedRatepayerResponse =\n    String(parsed.translated_ratepayer_response ?? \"\").trim() || translatedRatepayerResponse;\n\n  // optional if you added it in prompt\n  if (parsed.native_language_name) {\n    nativeLanguageName = String(parsed.native_language_name).trim() || nativeLanguageName;\n  }\n} else {\n  // JSON is missing/truncated. Salvage values if possible.\n  // This works even when finish_reason = \"length\"\n  const m1 = raw.match(/\"answerText\"\\s*:\\s*\"([\\s\\S]*?)\"\\s*,\\s*\"translated_ratepayer_response\"/);\n  if (m1?.[1]) answerText = m1[1].replace(/\\\\\"/g, '\"').trim() || answerText;\n\n  const m2 = raw.match(/\"translated_ratepayer_response\"\\s*:\\s*\"([\\s\\S]*)$/);\n  if (m2?.[1]) {\n    // Remove trailing unfinished JSON garbage if present\n    translatedRatepayerResponse = m2[1]\n      .replace(/\\\\\"/g, '\"')\n      .replace(/\"\\s*[,}]*\\s*$/g, \"\")\n      .trim() || translatedRatepayerResponse;\n  }\n}\n\n// Suggested queries by intent (keep your mapping, but your intent keys are inconsistent)\nconst suggestions = {\n  ratepayer_lookup: [\"When is my next payment due?\", \"Show me my payment history\"],\n  get_due_date: [\"What is my current balance?\", \"Show me my payment history\"],\n  payment_history: [\"What is my current balance?\", \"When is my next payment due?\"],\n  total_owed: [\"Show me my payment history\", \"When is my next payment due?\"],\n};\n\nconst intentKey = String(input.intent ?? \"\").trim();\n\nreturn [{\n  json: {\n    email: input.email,\n    chatId: input.chatId,\n    answerText,\n    translatedRatepayerResponse,        // ✅ new field\n    nativeLanguageName,                // ✅ optional, if you want\n    confidenceScore: Number(input.confidence ?? 0),\n    responseTimestamp: new Date().toISOString(),\n    suggestedQueries: suggestions[intentKey] || [\"What is my current balance?\", \"When is my next payment due?\"],\n    finishReason,                      // ✅ debug (remove later)\n  }\n}];\n"
+      },
+      "name": "Format Response",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [
+        1200,
+        1648
+      ],
+      "id": "73e77cfb-1186-467e-b5af-ad8bf73dd91b"
+    }
+  ],
+  "connections": {
+    "When Executed by Another Workflow": {
+      "main": [
+        [
+          {
+            "node": "Validate Input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate Input": {
+      "main": [
+        [
+          {
+            "node": "Check Validation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Validation": {
+      "main": [
+        [
+          {
+            "node": "Return Error",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Query by Intent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Return Error": {
+      "main": [
+        [
+          {
+            "node": "Merge",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Query by Intent": {
+      "main": [
+        [
+          {
+            "node": "Execute Query",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Execute Query": {
+      "main": [
+        [
+          {
+            "node": "Aggregate Payment Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate Answer": {
+      "main": [
+        [
+          {
+            "node": "Format Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge": {
+      "main": [
+        [
+          {
+            "node": "Return Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Aggregate Payment Data": {
+      "main": [
+        [
+          {
+            "node": "Generate Answer",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format Response": {
+      "main": [
+        [
+          {
+            "node": "Merge",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "761f13bbceea54afdd4e29da324c472fa735afac523bc5de8a36b6ef83839338"
+  }
+}

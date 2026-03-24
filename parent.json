@@ -1,0 +1,525 @@
+{
+  "nodes": [
+    {
+      "parameters": {
+        "jsCode": "const input = $input.first().json;\nconst body = input.body ?? input;\nconst raw = String(input.chatInput || body.userQuery || \"\").trim();\nlet parsed = {};\ntry {\n  parsed = JSON.parse(raw);\n} catch {\n  parsed = { userQuery: raw };\n}\nfunction uuidv4() {\n  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {\n    const r = Math.random() * 16 | 0;\n    const v = c === 'x' ? r : (r & 0x3 | 0x8);\n    return v.toString(16);\n  });\n}\nconst chatId    = String(parsed.chatId    || body.chatId    || input.sessionId || \"\").trim() || uuidv4();\nconst email = String(parsed.email || body.email || \"\");\nconst userQuery = String(parsed.userQuery || body.userQuery || raw);\nconst timestamp = String(parsed.timestamp || body.timestamp || new Date().toISOString());\nconst agentInput = `[CitizenConnect Request]\nEmail: ${email}\nChat ID: ${chatId}\nTimestamp: ${timestamp}\nUser Query: ${userQuery}\nClassify the above query and call the appropriate tool with this EXACT input payload:\n{\n  \"email\": \"${email}\",\n  \"chatId\": \"${chatId}\",\n  \"chatName\": \"<your generated chatName>\",\n  \"userQuery\": \"${userQuery}\",\n  \"userLanguage\": \"<detected language>\",\n  \"translatedQuery\": \"<English translation>\",\n  \"context\": \"<classified context>\",\n  \"intent\": \"<classified intent>\",\n  \"confidence\": <0..1>,\n  \"recalledAnswer\": \"\",\n  \"conversationHistory\": \"\",\n  \"timestamp\": \"${timestamp}\"\n}`;\nreturn [{\n  json: {\n    agentInput,\n    email,\n    chatId,\n    userQuery,\n    timestamp\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3536,
+        2784
+      ],
+      "id": "c486736f-ad5f-4e69-bbfc-afa4fda6bd9a",
+      "name": "Code in JavaScript"
+    },
+    {
+      "parameters": {
+        "description": "Look up ratepayer account info: balance, due dates, payment history, payment plans, concessions and eligibility. Use for contexts: ratepayer_lookup, payment_plan, concessions. Pass the full classified payload as a single JSON string in the 'query' field.",
+        "workflowId": {
+          "__rl": true,
+          "value": "fC9LC1KhSO9v2MkU",
+          "mode": "list",
+          "cachedResultUrl": "/workflow/fC9LC1KhSO9v2MkU",
+          "cachedResultName": "CitizenConnect - DB Subflow (No Groq, Correct)"
+        },
+        "workflowInputs": {
+          "mappingMode": "autoMapInputData",
+          "value": {},
+          "matchingColumns": [],
+          "schema": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        }
+      },
+      "id": "0f23d81b-a73e-447d-8483-9f9aa0d37e56",
+      "name": "Tool - Balance Lookup",
+      "type": "@n8n/n8n-nodes-langchain.toolWorkflow",
+      "typeVersion": 2.2,
+      "position": [
+        4016,
+        3008
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const agentOutput = $input.first().json;\nconst ctx = $('Code in JavaScript').first().json;\n\nfunction safeJsonParse(x) {\n  if (x == null) return null;\n  if (typeof x === \"object\") return x;\n  const s = String(x).trim();\n  if (!s) return null;\n  try { return JSON.parse(s); } catch {}\n  const firstObj = s.indexOf(\"{\");\n  const lastObj  = s.lastIndexOf(\"}\");\n  const firstArr = s.indexOf(\"[\");\n  const lastArr  = s.lastIndexOf(\"]\");\n  if (firstObj !== -1 && lastObj !== -1 && lastObj > firstObj) {\n    try { return JSON.parse(s.slice(firstObj, lastObj + 1)); } catch {}\n  }\n  if (firstArr !== -1 && lastArr !== -1 && lastArr > firstArr) {\n    try { return JSON.parse(s.slice(firstArr, lastArr + 1)); } catch {}\n  }\n  return null;\n}\n\nconst outerRaw =\n  agentOutput.output ??\n  agentOutput.text ??\n  agentOutput.response ??\n  agentOutput.message ??\n  agentOutput ??\n  \"\";\n\nconst outer = safeJsonParse(outerRaw) ?? {};\n\n// ── Log if parse failed (helps debug) ──────────────────────────\nif (!outer || Object.keys(outer).length === 0) {\n  console.error('[Parse Agent Output] Failed to parse agent response:', \n    JSON.stringify(outerRaw).slice(0, 300));\n}\n\nlet payload = outer;\n\nif (!payload?.answerText) {\n  if (outer.input && !outer.answerText) {\n    const fromInput = safeJsonParse(outer.input);\n    if (fromInput && typeof fromInput === \"object\") {\n      payload = { ...fromInput, answerText: null };\n    }\n  }\n  if (!payload?.answerText) {\n    let toolWrapper = outer;\n    if (toolWrapper && typeof toolWrapper === \"object\") {\n      const toolKey = Object.keys(toolWrapper).find(k =>\n        String(k).toLowerCase().includes(\"balance_lookup\")\n      );\n      if (toolKey) toolWrapper = toolWrapper[toolKey];\n    }\n    const toolResult =\n      toolWrapper?.result ??\n      outer?.[\"Tool_-_Balance_Lookup_response\"]?.result ??\n      outer?.[\"Tool_-_Balance_Lookup_Response\"]?.result ??\n      outer?.[\"Tool_Balance_Lookup_response\"]?.result ??\n      null;\n    const parsedResult = safeJsonParse(toolResult);\n    if (Array.isArray(parsedResult)) payload = parsedResult[0] ?? {};\n    else if (parsedResult && typeof parsedResult === \"object\") payload = parsedResult;\n  }\n}\n\nconst answerText =\n  payload.answerText ??\n  payload.answer ??\n  payload.translatedRatepayerResponse ??\n  payload.resultText ??\n  \"I was unable to retrieve your account details. Please try again.\";\n\nlet confidenceScore = Number(payload.confidenceScore ?? payload.confidence ?? 0);\nif (!Number.isFinite(confidenceScore)) confidenceScore = 0;\nconfidenceScore = Math.max(0, Math.min(1, confidenceScore));\n\nlet suggestedQueries = Array.isArray(payload.suggestedQueries)\n  ? payload.suggestedQueries.map(s => String(s ?? \"\"))\n  : [];\nif (suggestedQueries.length < 2) {\n  suggestedQueries = [\"Check my balance\", \"Set up a payment plan\", \"Speak to an agent\"];\n}\n\nconst nowIso        = new Date().toISOString();\nconst queryTimestamp = String(ctx.timestamp ?? nowIso);\nconst isEscalated   = Boolean(payload.is_escalated_status ?? payload.escalationFlag ?? false);\n\nreturn [{\n  json: {\n    // ── Identity ───────────────────────────────────────────────\n    email:                ctx.email          ?? payload.email ?? \"\",\n    chatId:               ctx.chatId         ?? payload.chatId ?? \"\",\n    chatName:             String(payload.chatName ?? \"New Chat\"),\n\n    // ── Query ──────────────────────────────────────────────────\n    userQuery:            String(ctx.userQuery ?? \"\"),\n    translatedQuery:      String(payload.translatedQuery ?? ctx.userQuery ?? \"\"),\n    queryLanguage:        String(payload.nativeLanguageName ?? payload.userLanguage ?? \"Unknown\"),\n    queryTimestamp,\n\n    // ── Answer ─────────────────────────────────────────────────\n    answerText:           String(answerText),\n    translatedAnswer:     String(payload.translatedRatepayerResponse ?? answerText),\n    nativeLanguageName:   String(payload.nativeLanguageName ?? payload.userLanguage ?? \"Unknown\"),\n    confidenceScore,\n    responseTimestamp:    nowIso,\n    suggestedQueries,\n\n    // ── Classification ─────────────────────────────────────────\n    context:              String(payload.context  ?? \"other\"),\n    intent:               String(payload.intent   ?? \"unclear\"),\n\n    // ── Storage decision (agent-decided) ───────────────────────\n    shouldStore:          Boolean(payload.shouldStore  ?? false),\n    storeReason:          String(payload.storeReason   ?? \"\"),\n\n    // ── Escalation ─────────────────────────────────────────────\n    isEscalated,\n    escalationTimestamp:  isEscalated ? nowIso : null,\n  }\n}];"
+      },
+      "id": "a3627436-a300-44c0-bb83-cdae9c598c9d",
+      "name": "Parse Agent Output",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4512,
+        2784
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH rp AS (\n  SELECT ratepayer_id\n  FROM ratepayers\n  WHERE lower(email) = lower('{{ String($json.email ?? \"\").replace(/'/g, \"''\") }}')\n  LIMIT 1\n),\nupsert_thread AS (\n  INSERT INTO threads (thread_id, ratepayer_id, thread_name, status)\n  SELECT\n    COALESCE(NULLIF('{{ String($json.chatId ?? \"\") }}', '')::uuid, gen_random_uuid()),\n    rp.ratepayer_id,\n    '{{ String($json.chatName ?? \"New Chat\").replace(/'/g, \"''\") }}',\n    'active'\n  FROM rp\n  ON CONFLICT (thread_id)\n  DO UPDATE SET\n    thread_name = COALESCE(EXCLUDED.thread_name, threads.thread_name),\n    status = 'active'\n  RETURNING thread_id\n)\nINSERT INTO messages (\n  thread_id,\n  ratepayer_query_language,\n  ratepayer_query,\n  query_timestamp,\n  translated_query,\n  response,\n  translated_ratepayer_response,\n  response_timestamp,\n  confidence_score,\n  is_escalated_status,\n  escalation_timestamp\n)\nSELECT\n  upsert_thread.thread_id,\n  '{{ String($json.queryLanguage ?? \"Unknown\").replace(/'/g, \"''\") }}',\n  '{{ String($json.userQuery ?? \"\").replace(/'/g, \"''\") }}',\n  '{{ String($json.queryTimestamp ?? \"\") }}'::timestamptz,\n  '{{ String($json.translatedQuery ?? \"\").replace(/'/g, \"''\") }}',\n  '{{ String($json.answerText ?? \"\").replace(/'/g, \"''\") }}',\n  '{{ String($json.translatedAnswer ?? \"\").replace(/'/g, \"''\") }}',\n  '{{ String($json.responseTimestamp ?? \"\") }}'::timestamptz,\n  {{ Number($json.confidenceScore ?? 0) }},\n  COALESCE({{ $json.isEscalated ?? false }}, false),\n  CASE\n    WHEN COALESCE({{ $json.isEscalated ?? false }}, false) = true\n    THEN now()\n    ELSE NULL\n  END\nFROM upsert_thread\nRETURNING message_id;",
+        "options": {}
+      },
+      "id": "5389bf58-9784-430f-8727-603902276dbd",
+      "name": "Save Message to DB",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        4736,
+        2784
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "rhekuYTUT7Mdue5B",
+          "name": "Postgres account 2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const res = $('Parse Agent Output').first().json;\n\nreturn [{\n  json: {\n    status:          \"success\",\n    email:           String(res.email          ?? \"\"),\n    chatId:          String(res.chatId         ?? \"\"),\n    chatName:        String(res.chatName        ?? \"New Chat\"),\n    answerText:      String(res.translatedAnswer ?? res.answerText ?? \"\"),\n    confidenceScore: Number.isFinite(Number(res.confidenceScore)) \n                       ? Number(res.confidenceScore) : 0,\n    suggestedQueries: Array.isArray(res.suggestedQueries) \n                       ? res.suggestedQueries : [\"\", \"\"],\n  }\n}];"
+      },
+      "id": "08cb6aff-7246-4e21-b98e-1aaa131422f6",
+      "name": "Format Final Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        5536,
+        2784
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json }}",
+        "options": {
+          "responseCode": 200,
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Content-Type",
+                "value": "application/json"
+              }
+            ]
+          }
+        }
+      },
+      "id": "541818a9-1bb7-4442-9e24-dad2663c94e9",
+      "name": "Respond - Success",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        5760,
+        2784
+      ]
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "={{ $json.agentInput }}",
+        "options": {
+          "systemMessage": "=You are CitizenConnect NLP classifier, tool router, and response localizer.\n\nYour ONLY job is to:\n1. Detect the user's language from the User Query\n2. Classify the query into context + intent\n3. Search the vector knowledge base for relevant context (ALWAYS)\n4. Call the correct tool (if needed)\n5. Return a final JSON response in the user's native language\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\nINPUT (in the user message text)\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\nEmail: <may be empty>\nChat ID: <always present>\nTimestamp: <present>\nUser Query: <present>\n\nTwo history blocks may also appear:\n- [Semantically Relevant Past Exchanges] — past exchanges retrieved by vector\n  similarity. Use these to answer questions about previous payment plans,\n  old balances, past concessions, etc. WITHOUT calling a tool if the answer\n  is already here.\n- [Recent History] — last 30 exchanges for session continuity.\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\nVECTOR SEARCH RULE — ALWAYS DO THIS FIRST\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\nBefore calling any other tool, ALWAYS call the Pinecone Vector Store tool\nwith the user's query as the search term. This retrieves semantically\nsimilar past exchanges and policy knowledge relevant to the current query.\n\nUse the retrieved context to:\n1. Answer historical questions (\"what was my plan last year?\") without a\n   live DB lookup if the answer is already in the retrieved results.\n2. Provide richer, more consistent answers by grounding responses in\n   what has actually been discussed with this user before.\n3. Avoid asking for information (email, account details) that appears\n   in retrieved past exchanges.\n\nOnly skip the vector search if the query is a simple greeting with no\naccount or policy relevance.\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\nMEMORY RULE\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\nYou have full memory of this conversation. Before classifying each message:\n\n1. EMAIL — If the current message has an empty Email field, check\n   [Semantically Relevant Past Exchanges], [Recent History], and prior turns\n   for an email the user provided. Use that email when calling a tool.\n   Never call a tool with an empty email if one was given earlier.\n\n2. CONTEXT CARRY-OVER — If the user's query is short or ambiguous\n   (e.g. \"and my due date?\", \"what about last month?\", \"how much do I owe?\"),\n   resolve it using retrieved vector context and prior turns.\n   Do not treat it as a new unrelated query.\n\n3. NEVER ASK AGAIN — If the user already provided their email, name, or\n   account details in any prior turn or retrieved context, do not ask again.\n\n4. CONVERSATION CONTINUITY — Each message is part of an ongoing conversation.\n   Use the full history and retrieved context to understand what the user\n   is referring to.\n\nExample:\n  Turn 1 — User: \"my email is john@example.com, what is my balance?\"\n  Turn 2 — User: \"what was my payment plan last year?\"\n  → Search vector store first. If the plan appears in retrieved results,\n    answer from there. If not, call balance_lookup with john@example.com.\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\nLANGUAGE RULE\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\nDetect language from User Query. Default to English if unclear.\nAlways return answerText in the detected language.\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\nCLASSIFICATION\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\nratepayer_lookup → check_balance, due_date, payment_history, total_owed  → CALL balance_lookup tool\npayment_plan     → setup_plan, modify_plan, cancel_plan                  → CALL balance_lookup tool\nconcessions      → check_eligibility, apply_concession, verify_status    → CALL balance_lookup tool\nescalation       → dispute_valuation, complaint, urgent_issue            → CALL escalation tool\npolicy_question  → rates_calculation, late_fees, payment_methods,        → vector search only,\n                   general_policy                                            NO other tool\nother            → general_inquiry, greeting, unclear                    → NO tool\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\nDECISION FLOW (follow in order)\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n1. Call Pinecone Vector Store with user query (skip only for greetings)\n2. Check retrieved results + history blocks for the answer\n3. If answer found in retrieved context → respond directly, no other tool\n4. If answer NOT found → classify and call the appropriate tool above\n5. After tool returns → translate response into user language\n6. Output final JSON\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\nTOOL CALL FORMAT\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\nPass a single argument named \"query\" containing a JSON string:\n\nquery = {\"email\":\"<user email>\",\"chatId\":\"<chatId>\",\"userQuery\":\"<user query in native language>\",\"context\":\"<identified context>\",\"translated_query\":\"<userQuery translated to English>\",\"intent\":\"<identified intent>\",\"confidence\":\"<confidence score>\",\"timestamp\":\"<timestamp in ISO format>\",\"userLanguage\":\"<identified userLanguage>\"}\n\nRULES after tool returns:\n- Do NOT change any factual data (amounts, dates, IDs)\n- Translate only the wording into userLanguage\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\nOUTPUT — STRICT JSON ONLY\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\nIf tool was called:\nThe tool returns a JSON object.\n\nIf NO tool was called:\n{\n  \"email\": \"<email from input, empty string if not provided>\",\n  \"chatId\": \"<chatId from input>\",\n  \"chatName\": \"<3-5 word label summarising the topic e.g. 'Balance Inquiry', 'Payment Plan Setup'>\",\n  \"answerText\": \"<answer in user's detected language>\",\n  \"confidenceScore\": <0.0 to 1.0>,\n  \"responseTimestamp\": \"<current ISO timestamp>\",\n  \"suggestedQueries\": [\"<relevant follow-up 1>\", \"<relevant follow-up 2>\", \"<relevant follow-up 3>\"]\n}\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\nSHOULD STORE RULES\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\nSet shouldStore: TRUE only when ALL of these are true:\n  ✓ A tool was called and returned real account data\n  ✓ The answer contains specific facts (amounts, dates, plan details, IDs)\n  ✓ This exchange would be useful to recall in a future session\n  ✓ confidenceScore is ≥ 0.5\n\nSet shouldStore: FALSE when ANY of these are true:\n  ✗ The query was a greeting, thanks, or chitchat\n  ✗ The answer was a fallback or error message (\"unable to retrieve...\")\n  ✗ The answer came from policy knowledge only (no live DB data used)\n  ✗ confidenceScore is < 0.5\n  ✗ No tool was called\n\nExamples:\n  \"Hi there!\"                          → shouldStore: false  (greeting)\n  \"What are the late fees?\"            → shouldStore: false  (policy only)\n  \"What is my balance?\" → $342.50 ✓   → shouldStore: true   (real account data)\n  \"Set up a plan\" → plan created ✓    → shouldStore: true   (specific facts)\n  \"What's my balance?\" → error ✗      → shouldStore: false  (fallback answer)\n\nNO markdown. NO explanation. NO extra keys. Output the JSON and nothing else."
+        }
+      },
+      "id": "084a4ae6-ff01-499f-aa69-fea8f7e6d1ec",
+      "name": "AI Agent1",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3.1,
+      "position": [
+        3888,
+        2784
+      ]
+    },
+    {
+      "parameters": {
+        "sessionIdType": "customKey",
+        "sessionKey": "={{ $('Code in JavaScript').first().json.chatId }}",
+        "contextWindowLength": 10
+      },
+      "id": "221eac90-7522-4e1d-b7f2-c5b6eb90977c",
+      "name": "Postgres Chat Memory1",
+      "type": "@n8n/n8n-nodes-langchain.memoryPostgresChat",
+      "typeVersion": 1.3,
+      "position": [
+        3888,
+        3008
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "rhekuYTUT7Mdue5B",
+          "name": "Postgres account 2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "model": "magistral-small-latest",
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatMistralCloud",
+      "typeVersion": 1,
+      "position": [
+        3760,
+        3008
+      ],
+      "id": "ac01630e-4934-4943-9d5f-11d96f49230c",
+      "name": "Mistral Cloud Chat Model",
+      "credentials": {
+        "mistralCloudApi": {
+          "id": "hMgfpOWW7s4KfvpN",
+          "name": "Mistral Cloud account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "6b50451e-fa41-40f2-8755-e30a6de53e3c",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        3312,
+        2688
+      ],
+      "id": "63254523-f4da-4e33-84ca-2e92b192a511",
+      "name": "Webhook",
+      "webhookId": "6b50451e-fa41-40f2-8755-e30a6de53e3c"
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.chatTrigger",
+      "typeVersion": 1.4,
+      "position": [
+        3312,
+        2880
+      ],
+      "id": "6ec58235-4e42-4994-8aaf-24f4d5f407fd",
+      "name": "When chat message received",
+      "webhookId": "acd44cc8-196d-4736-b0a8-f9b892b6b27d"
+    },
+    {
+      "parameters": {
+        "mode": "retrieve-as-tool",
+        "toolDescription": "ALWAYS call this tool first before any other tool. Search the knowledge base \nand past conversation history for context semantically similar to the user's \nquery. Use this to answer questions about payment plans, balances, policy, \nfees, and any historical account activity. Input should be the user's query \nas a plain string.",
+        "pineconeIndex": {
+          "__rl": true,
+          "value": "citi-mini",
+          "mode": "list",
+          "cachedResultName": "citi-mini"
+        },
+        "options": {
+          "metadata": {
+            "metadataValues": [
+              {
+                "name": "email",
+                "value": "={{ $('Code in JavaScript').first().json.email }}"
+              }
+            ]
+          }
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.vectorStorePinecone",
+      "typeVersion": 1.3,
+      "position": [
+        4192,
+        3008
+      ],
+      "id": "74fafb25-6288-4c79-9064-b52b5d7e7039",
+      "name": "Pinecone Vector Store",
+      "credentials": {
+        "pineconeApi": {
+          "id": "OW6oWOTkPXq264Tv",
+          "name": "PineconeApi account 2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "modelName": "sentence-transformers/all-mpnet-base-v2",
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.embeddingsHuggingFaceInference",
+      "typeVersion": 1,
+      "position": [
+        4320,
+        3200
+      ],
+      "id": "ff588bf1-a674-4d3b-9a44-6a77e4099885",
+      "name": "Embeddings HuggingFace Inference",
+      "credentials": {
+        "huggingFaceApi": {
+          "id": "OjDpwmiG2YMw0v3w",
+          "name": "HuggingFaceApi account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.documentDefaultDataLoader",
+      "typeVersion": 1.1,
+      "position": [
+        5328,
+        2880
+      ],
+      "id": "f7ff2cd4-d3b5-4b20-ab46-2919df0f910a",
+      "name": "Default Data Loader",
+      "alwaysOutputData": false
+    },
+    {
+      "parameters": {
+        "modelName": "sentence-transformers/all-mpnet-base-v2",
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.embeddingsHuggingFaceInference",
+      "typeVersion": 1,
+      "position": [
+        5200,
+        2880
+      ],
+      "id": "9c5b8eba-0d82-4c0b-a2d3-6691d81e3342",
+      "name": "Embeddings HuggingFace Inference1",
+      "alwaysOutputData": false,
+      "credentials": {
+        "huggingFaceApi": {
+          "id": "OjDpwmiG2YMw0v3w",
+          "name": "HuggingFaceApi account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const r = $('Parse Agent Output').first().json;\n\nif (!r.shouldStore) {\n  return [];\n}\n\nreturn [{\n  json: {\n    text: `Q: ${r.userQuery}\\nA: ${r.answerText}`,\n    metadata: {\n      email:     r.email     || 'no-email',\n      chatId:    r.chatId    || '',\n      intent:    r.intent    || '',\n      context:   r.context   || '',\n      timestamp: r.responseTimestamp || new Date().toISOString()\n    }\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4960,
+        2656
+      ],
+      "id": "a5cb76ae-bc43-4237-aac8-6b98967340d8",
+      "name": "data to insert",
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "mode": "insert",
+        "pineconeIndex": {
+          "__rl": true,
+          "value": "citi-mini",
+          "mode": "list",
+          "cachedResultName": "citi-mini"
+        },
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.vectorStorePinecone",
+      "typeVersion": 1.3,
+      "position": [
+        5184,
+        2656
+      ],
+      "id": "7c3bdf85-7ab3-42fe-b261-e7e7ae7a81b3",
+      "name": "Pinecone Vector Store for embedding",
+      "credentials": {
+        "pineconeApi": {
+          "id": "OW6oWOTkPXq264Tv",
+          "name": "PineconeApi account 2"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Code in JavaScript": {
+      "main": [
+        [
+          {
+            "node": "AI Agent1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Tool - Balance Lookup": {
+      "ai_tool": [
+        [
+          {
+            "node": "AI Agent1",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Agent Output": {
+      "main": [
+        [
+          {
+            "node": "Save Message to DB",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save Message to DB": {
+      "main": [
+        [
+          {
+            "node": "Format Final Response",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "data to insert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format Final Response": {
+      "main": [
+        [
+          {
+            "node": "Respond - Success",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Agent1": {
+      "main": [
+        [
+          {
+            "node": "Parse Agent Output",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Postgres Chat Memory1": {
+      "ai_memory": [
+        [
+          {
+            "node": "AI Agent1",
+            "type": "ai_memory",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mistral Cloud Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "AI Agent1",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Code in JavaScript",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "When chat message received": {
+      "main": [
+        [
+          {
+            "node": "Code in JavaScript",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Pinecone Vector Store": {
+      "ai_tool": [
+        [
+          {
+            "node": "AI Agent1",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Embeddings HuggingFace Inference": {
+      "ai_embedding": [
+        [
+          {
+            "node": "Pinecone Vector Store",
+            "type": "ai_embedding",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Default Data Loader": {
+      "ai_document": [
+        [
+          {
+            "node": "Pinecone Vector Store for embedding",
+            "type": "ai_document",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Embeddings HuggingFace Inference1": {
+      "ai_embedding": [
+        [
+          {
+            "node": "Pinecone Vector Store for embedding",
+            "type": "ai_embedding",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "data to insert": {
+      "main": [
+        [
+          {
+            "node": "Pinecone Vector Store for embedding",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Pinecone Vector Store for embedding": {
+      "main": [
+        [
+          {
+            "node": "Format Final Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "761f13bbceea54afdd4e29da324c472fa735afac523bc5de8a36b6ef83839338"
+  }
+}
